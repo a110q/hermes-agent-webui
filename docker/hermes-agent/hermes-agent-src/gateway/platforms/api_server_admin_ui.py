@@ -486,7 +486,7 @@ def render_admin_shell() -> str:
             <button id="rollback-runtime" class="danger" type="button">回滚上一版运行配置</button>
           </div>
 
-          <p class="muted-note">模型名称先手填；点击“测试连接”会返回该上游可见的模型列表，方便你核对是否能选到模型。</p>
+          <p class="muted-note">模型名称先手填；点击“测试连接”会先读取上游可见模型，再用当前填写的模型真实发送一条最小消息。若模型名无效，或上游偷偷回退到别的模型，会直接报错。</p>
         </section>
 
         <section class="card operation-log" id="operation-log"></section>
@@ -792,7 +792,8 @@ def render_admin_shell() -> str:
         return;
       }
       const models = (response.data.model_ids || []).slice(0, 8).join(', ') || '未返回模型列表';
-      appendLog(`连通性测试成功。可见模型：${models}`, 'ok');
+      const resolvedModel = response.data.resolved_model ? `；实际返回模型：${response.data.resolved_model}` : '';
+      appendLog(`连通性测试成功。请求模型：${response.data.model_name || '未填写'}${resolvedModel}；可见模型：${models}`, 'ok');
       await refreshProfiles(true);
     }
 

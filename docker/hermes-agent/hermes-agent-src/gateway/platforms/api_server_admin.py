@@ -16,6 +16,34 @@ from gateway.platforms.api_server_admin_storage import HermesAdminStorage
 from gateway.platforms.api_server_admin_ui import render_admin_shell
 
 
+def _normalize_model_name(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if "/" in normalized:
+        normalized = normalized.split("/")[-1]
+    return normalized
+
+
+def _model_name_matches(requested: str, actual: str) -> bool:
+    requested_normalized = _normalize_model_name(requested)
+    actual_normalized = _normalize_model_name(actual)
+    return bool(requested_normalized and actual_normalized and requested_normalized == actual_normalized)
+
+
+def _extract_error_message(payload: Any) -> str:
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("code")
+            if message:
+                return str(message)
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    return ""
+
+
 @dataclass
 class AdminSessionStore:
     ttl_seconds: int = 1800
@@ -241,29 +269,66 @@ class APIServerAdminService:
         return await self._activate_profile(profile)
 
     async def probe_provider(self, *, api_key: str, base_url: str, model_name: str) -> dict[str, Any]:
-        target = f"{base_url.rstrip('/')}/models"
+        base = base_url.rstrip("/")
+        target = f"{base}/models"
+        chat_target = f"{base}/chat/completions"
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         timeout = aiohttp.ClientTimeout(total=15)
+        requested_model = str(model_name or "").strip()
+
+        result: dict[str, Any] = {
+            "ok": False,
+            "status": 0,
+            "model_name": requested_model,
+            "model_ids": [],
+        }
+
+        if not requested_model:
+            result["error"] = "模型名称不能为空"
+            return result
 
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(target, headers=headers) as response:
+                try:
+                    async with session.get(target, headers=headers) as response:
+                        payload = await response.json(content_type=None)
+                        result["models_status"] = response.status
+                        result["model_ids"] = [item.get("id", "") for item in payload.get("data", []) if item.get("id")]
+                        models_error = _extract_error_message(payload)
+                        if models_error:
+                            result["models_error"] = models_error
+                except Exception as exc:
+                    result["models_error"] = str(exc)
+
+                async with session.post(
+                    chat_target,
+                    headers={**headers, "Content-Type": "application/json"},
+                    json={
+                        "model": requested_model,
+                        "messages": [{"role": "user", "content": "Reply exactly: OK"}],
+                        "max_tokens": 8,
+                        "temperature": 0,
+                    },
+                ) as response:
                     payload = await response.json(content_type=None)
-                    model_ids = [item.get("id", "") for item in payload.get("data", []) if item.get("id")]
-                    return {
-                        "ok": response.status < 400,
-                        "status": response.status,
-                        "model_name": model_name,
-                        "model_ids": model_ids,
-                    }
+                    result["status"] = response.status
+                    resolved_model = str(payload.get("model") or "")
+                    if resolved_model:
+                        result["resolved_model"] = resolved_model
+
+                    if response.status >= 400:
+                        result["error"] = _extract_error_message(payload) or f"HTTP {response.status}"
+                        return result
+
+                    if resolved_model and not _model_name_matches(requested_model, resolved_model):
+                        result["error"] = f"请求模型 {requested_model}，但上游实际返回的是 {resolved_model}"
+                        return result
+
+                    result["ok"] = True
+                    return result
         except Exception as exc:
-            return {
-                "ok": False,
-                "status": 0,
-                "model_name": model_name,
-                "model_ids": [],
-                "error": str(exc),
-            }
+            result["error"] = str(exc)
+            return result
 
     async def handle_test_connection(self, request: web.Request) -> web.Response:
         auth_error = self._require_admin(request)
@@ -325,6 +390,10 @@ class APIServerAdminService:
         if status.get("phase") == "pending_verification":
             status = await self._verify_after_restart(status)
             self.storage.status_store.write(status)
+        current_summary = self.storage.read_current_summary()
+        for key in ("provider", "model", "base_url"):
+            if current_summary.get(key) and not status.get(key):
+                status[key] = current_summary[key]
         return web.json_response(status)
 
     async def _activate_profile(self, profile: dict[str, Any]) -> web.Response:

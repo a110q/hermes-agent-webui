@@ -31,6 +31,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from hermes_cli.config import save_config
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +295,11 @@ class TestHealthEndpoint:
 
 
 class TestModelsEndpoint:
+    @patch("hermes_cli.config.load_config", return_value={"model": {"default": "glm-5"}})
+    def test_resolve_model_name_prefers_configured_runtime_model(self, _mock_load_config):
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="lucas"):
+            assert APIServerAdapter._resolve_model_name("") == "glm-5"
+
     @pytest.mark.asyncio
     async def test_models_returns_hermes_agent(self, adapter):
         app = _create_app(adapter)
@@ -309,15 +315,15 @@ class TestModelsEndpoint:
     @pytest.mark.asyncio
     async def test_models_returns_profile_name(self):
         """When running under a named profile, /v1/models advertises the profile name."""
-        with patch("gateway.platforms.api_server.APIServerAdapter._resolve_model_name", return_value="lucas"):
-            adapter = _make_adapter()
+        adapter = _make_adapter()
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/v1/models")
-            assert resp.status == 200
-            data = await resp.json()
-            assert data["data"][0]["id"] == "lucas"
-            assert data["data"][0]["root"] == "lucas"
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="lucas"):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/models")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["data"][0]["id"] == "lucas"
+                assert data["data"][0]["root"] == "lucas"
 
     @pytest.mark.asyncio
     async def test_models_returns_explicit_model_name(self):
@@ -326,6 +332,18 @@ class TestModelsEndpoint:
         config = PlatformConfig(enabled=True, extra=extra)
         adapter = APIServerAdapter(config)
         assert adapter._model_name == "my-custom-agent"
+
+    @pytest.mark.asyncio
+    async def test_models_reflect_runtime_config_change_without_restart(self):
+        adapter = _make_adapter()
+        save_config({"model": {"default": "glm-5", "provider": "custom", "base_url": "https://gateway.example.com/v1"}})
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/models")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["data"][0]["id"] == "glm-5"
+            assert data["data"][0]["root"] == "glm-5"
 
     def test_resolve_model_name_explicit(self):
         assert APIServerAdapter._resolve_model_name("my-bot") == "my-bot"
@@ -612,6 +630,57 @@ class TestChatCompletionsEndpoint:
             assert data["choices"][0]["message"]["content"] == "Hello! How can I help you today?"
             assert data["choices"][0]["finish_reason"] == "stop"
             assert "usage" in data
+
+    @pytest.mark.asyncio
+    async def test_completion_reports_advertised_model_not_stale_requested_model(self):
+        mock_result = {
+            "final_response": "Hello!",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"model_name": "glm-5"}))
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["model"] == "glm-5"
+
+    @pytest.mark.asyncio
+    async def test_completion_reflects_runtime_config_change_without_restart(self):
+        mock_result = {
+            "final_response": "Hello!",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        adapter = _make_adapter()
+        save_config({"model": {"default": "glm-5", "provider": "custom", "base_url": "https://gateway.example.com/v1"}})
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["model"] == "glm-5"
 
     @pytest.mark.asyncio
     async def test_system_prompt_extracted(self, adapter):

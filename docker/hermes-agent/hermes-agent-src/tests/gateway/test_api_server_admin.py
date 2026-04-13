@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
@@ -333,6 +334,86 @@ async def test_status_returns_persisted_state():
 
     assert response.status == 200
     assert payload["phase"] in {"pending_verification", "ready"}
+
+
+@pytest.mark.asyncio
+async def test_status_falls_back_to_current_runtime_summary_when_idle():
+    save_config(
+        {
+            "model": {
+                "provider": "custom",
+                "base_url": "https://gateway.example.com/v1",
+                "default": "glm-5",
+            }
+        }
+    )
+    save_env_value("OPENAI_API_KEY", "sk-runtime")
+
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "sk-admin"}))
+    app = adapter._build_test_app()
+
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/api/admin/auth", json={"api_key": "sk-admin"})
+        response = await client.get("/api/admin/status")
+        payload = await response.json()
+
+    assert response.status == 200
+    assert payload["phase"] == "idle"
+    assert payload["provider"] == "custom"
+    assert payload["base_url"] == "https://gateway.example.com/v1"
+    assert payload["model"] == "glm-5"
+
+
+@pytest.mark.asyncio
+async def test_test_connection_fails_when_requested_model_cannot_complete():
+    upstream = web.Application()
+
+    async def handle_models(_request):
+        return web.json_response({"object": "list", "data": [{"id": "glm-5"}]})
+
+    async def handle_chat(request):
+        payload = await request.json()
+        if payload.get("model") != "glm-5":
+            return web.json_response(
+                {"error": {"message": "model not found", "code": "model_not_found"}},
+                status=400,
+            )
+        return web.json_response(
+            {
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": "glm-5",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}],
+            }
+        )
+
+    upstream.router.add_get("/v1/models", handle_models)
+    upstream.router.add_post("/v1/chat/completions", handle_chat)
+    upstream_server = TestServer(upstream)
+    await upstream_server.start_server()
+
+    try:
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "sk-admin"}))
+        app = adapter._build_test_app()
+
+        async with TestClient(TestServer(app)) as client:
+            await client.post("/api/admin/auth", json={"api_key": "sk-admin"})
+            response = await client.post(
+                "/api/admin/test-connection",
+                json={
+                    "provider": "openai",
+                    "api_key": "sk-live",
+                    "base_url": str(upstream_server.make_url('/v1')).rstrip('/'),
+                    "model_name": "glm-51",
+                },
+            )
+            payload = await response.json()
+    finally:
+        await upstream_server.close()
+
+    assert response.status == 400
+    assert payload["ok"] is False
+    assert payload["model_name"] == "glm-51"
 
 
 @pytest.mark.asyncio

@@ -324,9 +324,8 @@ class APIServerAdapter(BasePlatformAdapter):
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
-        self._model_name: str = self._resolve_model_name(
-            extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
-        )
+        self._model_name_override: str = str(extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")) or "")
+        self._model_name: str = self._resolve_model_name(self._model_name_override)
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -354,16 +353,39 @@ class APIServerAdapter(BasePlatformAdapter):
         return tuple(str(item).strip() for item in items if str(item).strip())
 
     @staticmethod
+    def _configured_runtime_model_name() -> str:
+        """Read the configured runtime model from config.yaml if available."""
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            model_cfg = cfg.get("model", {})
+            if isinstance(model_cfg, str) and model_cfg.strip():
+                return model_cfg.strip()
+            if isinstance(model_cfg, dict):
+                for key in ("default", "model"):
+                    value = model_cfg.get(key, "")
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
     def _resolve_model_name(explicit: str) -> str:
         """Derive the advertised model name for /v1/models.
 
         Priority:
         1. Explicit override (config extra or API_SERVER_MODEL_NAME env var)
-        2. Active profile name (so each profile advertises a distinct model)
-        3. Fallback: "hermes-agent"
+        2. Configured runtime model from config.yaml
+        3. Active profile name (legacy fallback)
+        4. Fallback: "hermes-agent"
         """
         if explicit and explicit.strip():
             return explicit.strip()
+        configured_model = APIServerAdapter._configured_runtime_model_name()
+        if configured_model:
+            return configured_model
         try:
             from hermes_cli.profiles import get_active_profile_name
             profile = get_active_profile_name()
@@ -372,6 +394,11 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             pass
         return "hermes-agent"
+
+    def _advertised_model_name(self) -> str:
+        """Return the current advertised model name from live runtime config."""
+        self._model_name = self._resolve_model_name(self._model_name_override)
+        return self._model_name
 
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
@@ -550,12 +577,12 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "list",
             "data": [
                 {
-                    "id": self._model_name,
+                    "id": self._advertised_model_name(),
                     "object": "model",
                     "created": int(time.time()),
                     "owned_by": "hermes",
                     "permission": [],
-                    "root": self._model_name,
+                    "root": self._advertised_model_name(),
                     "parent": None,
                 }
             ],
@@ -661,7 +688,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = body.get("model", self._model_name)
+        model_name = self._advertised_model_name()
         created = int(time.time())
 
         if stream:
@@ -1071,7 +1098,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "response",
             "status": "completed",
             "created_at": created_at,
-            "model": body.get("model", self._model_name),
+            "model": self._advertised_model_name(),
             "output": output_items,
             "usage": {
                 "input_tokens": usage.get("input_tokens", 0),
@@ -1834,7 +1861,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             logger.info(
                 "[%s] API server listening on http://%s:%d (model: %s)",
-                self.name, self._host, self._port, self._model_name,
+                self.name, self._host, self._port, self._advertised_model_name(),
             )
             return True
 
