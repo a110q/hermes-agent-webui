@@ -269,8 +269,8 @@ async def test_apply_writes_status_and_requests_restarts(monkeypatch):
     assert restart_calls == ["open-webui"]
     assert wait_calls == ["open-webui"]
     assert status["phase"] == "ready"
-    assert status["provider"] == "openai"
-    assert config["model"]["provider"] == "openai"
+    assert status["provider"] == "custom"
+    assert config["model"]["provider"] == "custom"
     assert env_vars["OPENAI_API_KEY"] == "sk-new"
 
 
@@ -323,7 +323,7 @@ def test_compose_mounts_required_admin_volumes():
 @pytest.mark.asyncio
 async def test_status_returns_persisted_state():
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "sk-admin"}))
-    adapter._admin_service.storage.status_store.write({"phase": "pending_verification", "provider": "openai"})
+    adapter._admin_service.storage.status_store.write({"phase": "pending_verification", "provider": "custom"})
     app = adapter._build_test_app()
 
     async with TestClient(TestServer(app)) as client:

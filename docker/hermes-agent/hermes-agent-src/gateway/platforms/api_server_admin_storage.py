@@ -18,6 +18,10 @@ _MANAGED_PROVIDER_ENV_KEYS = {
     "GEMINI_API_KEY",
 }
 
+_MANAGED_BASE_URL_ENV_KEYS = {
+    "OPENAI_BASE_URL",
+}
+
 _PROVIDER_ENV_KEY = {
     "custom": "OPENAI_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -96,6 +100,8 @@ class HermesAdminStorage:
         model_name: str,
     ) -> dict[str, str]:
         normalized_provider = provider.strip().lower()
+        if normalized_provider == "openai":
+            normalized_provider = "custom"
         if normalized_provider not in _PROVIDER_ENV_KEY:
             raise ValueError(f"Unsupported provider: {provider}")
 
@@ -114,6 +120,12 @@ class HermesAdminStorage:
             else:
                 remove_env_value(env_key)
 
+        if normalized_provider == "custom":
+            save_env_value("OPENAI_BASE_URL", base_url)
+        else:
+            for env_key in sorted(_MANAGED_BASE_URL_ENV_KEYS):
+                remove_env_value(env_key)
+
         return {
             "provider": normalized_provider,
             "base_url": base_url,
@@ -123,7 +135,7 @@ class HermesAdminStorage:
 
     def apply_profile_record(self, profile: dict[str, Any]) -> dict[str, str]:
         provider_type = str(profile.get("provider_type") or "openai-compatible").strip().lower()
-        provider = "openai" if provider_type in {"openai", "openai-compatible", "custom"} else provider_type
+        provider = "custom" if provider_type in {"openai", "openai-compatible", "custom"} else provider_type
         return self.apply_provider_settings(
             provider=provider,
             api_key=str(profile.get("api_key", "")),

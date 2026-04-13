@@ -147,3 +147,39 @@ def test_sync_open_webui_config_rewrites_stale_target(tmp_path):
     assert backup["openai"]["api_base_urls"] == ["http://openclaw-hermes-agent:8642/v1"]
     assert summary["rewritten"] is True
     assert summary["db_path"] == str(db_path)
+
+
+def test_apply_profile_record_maps_openai_compatible_to_custom_and_updates_base_url_env():
+    save_config(
+        {
+            "model": {
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "default": "old-model",
+            }
+        }
+    )
+    save_env_value("OPENAI_BASE_URL", "https://stale.example/v1")
+    save_env_value("OPENAI_API_KEY", "old-openai-key")
+    save_env_value("OPENROUTER_API_KEY", "stale-openrouter-key")
+
+    storage = HermesAdminStorage()
+    summary = storage.apply_profile_record(
+        {
+            "provider_type": "openai-compatible",
+            "api_key": "sk-new-openai-compatible",
+            "base_url": "https://gateway.example.com/v1",
+            "model_name": "glm-5",
+        }
+    )
+
+    config = load_config()
+    env_vars = load_env()
+
+    assert summary["provider"] == "custom"
+    assert summary["base_url"] == "https://gateway.example.com/v1"
+    assert config["model"]["provider"] == "custom"
+    assert config["model"]["base_url"] == "https://gateway.example.com/v1"
+    assert env_vars["OPENAI_API_KEY"] == "sk-new-openai-compatible"
+    assert env_vars["OPENAI_BASE_URL"] == "https://gateway.example.com/v1"
+    assert "OPENROUTER_API_KEY" not in env_vars

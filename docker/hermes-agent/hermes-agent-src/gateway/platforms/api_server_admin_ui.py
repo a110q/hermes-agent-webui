@@ -516,6 +516,7 @@ def render_admin_shell() -> str:
 
     const providerTypeLabels = {
       'openai-compatible': 'OpenAI 兼容接口',
+      custom: 'OpenAI 兼容接口',
       openrouter: 'OpenRouter',
       gemini: 'Gemini OpenAI 接口',
     };
