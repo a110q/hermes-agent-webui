@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Local secrets
+.env
+**/.env
+
+# Runtime data
+data/
+.playwright-cli/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+**/venv/
+**/.venv/
+
+# IDE
+.vscode/
+.idea/
